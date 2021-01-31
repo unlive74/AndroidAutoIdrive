@@ -2,55 +2,26 @@ package me.hufman.androidautoidrive.phoneui
 
 import android.animation.ObjectAnimator
 import android.graphics.Point
-import android.os.AsyncTask
 import android.os.Bundle
-import android.os.Handler
-import android.util.Log
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
+import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
 import kotlinx.android.synthetic.main.activity_navintent.*
-import me.hufman.androidautoidrive.CarInformation
 import me.hufman.androidautoidrive.R
-import me.hufman.androidautoidrive.carapp.liveData
 import me.hufman.androidautoidrive.carapp.navigation.AndroidGeocoderSearcher
 import me.hufman.androidautoidrive.carapp.navigation.NavigationParser
 import me.hufman.androidautoidrive.carapp.navigation.NavigationTriggerSender
-import me.hufman.idriveconnectionkit.CDSProperty
+import me.hufman.androidautoidrive.phoneui.controllers.NavigationSearchController
+import me.hufman.androidautoidrive.phoneui.viewmodels.NavigationStatusModel
 
 class NavIntentActivity: AppCompatActivity() {
 	companion object {
 		val TAG = "NavActivity"
-
-		val TIMEOUT = 8000L
-		val SUCCESS = 1000L
 	}
 
-	class ParserTask(val parent: NavIntentActivity): AsyncTask<String, Unit, String?>() {
-		val parser = NavigationParser(AndroidGeocoderSearcher(parent))
-
-		override fun doInBackground(vararg p0: String?): String? {
-			val url = p0.getOrNull(0) ?: return null
-			try {
-				val rhmi = parser.parseUrl(url)
-				Log.i(TAG, "Parsed $url into car nav $rhmi")
-				return rhmi
-			} catch (e: Exception) {
-				return null
-			}
-		}
-
-		override fun onPostExecute(result: String?) {
-			if (result == null) {
-				parent.onParseFailure()
-			} else {
-				NavigationTriggerSender(parent).triggerNavigation(result)
-				parent.onBegin()
-			}
-		}
-	}
-
-	var parsingTask: ParserTask? = null
+	val viewModel by viewModels<NavigationStatusModel> { NavigationStatusModel.Factory(this.applicationContext) }
 
 	override fun onAttachedToWindow() {
 		super.onAttachedToWindow()
@@ -71,61 +42,38 @@ class NavIntentActivity: AppCompatActivity() {
 		super.onCreate(savedInstanceState)
 
 		setContentView(R.layout.activity_navintent)
+
+		viewModel.searchStatus.observe(this) {
+			val oldText = txtNavLabel.text
+			val text = this.run(it)
+			txtNavLabel.text = text
+			if (oldText.isNotBlank() && text.isBlank()) {
+				finish()
+			}
+		}
+		viewModel.isSearching.observe(this) {
+			prgNavSpinner.isIndeterminate = it
+
+			// finished searching
+			if (!it) {
+				prgNavSpinner.progress = 0
+
+				val animation = ObjectAnimator.ofInt(prgNavSpinner, "progress", prgNavSpinner.progress, prgNavSpinner.max)
+				animation.duration = 500
+				animation.interpolator = DecelerateInterpolator()
+				animation.start()
+			}
+		}
 	}
 
 	override fun onResume() {
 		super.onResume()
 		val url = intent?.data
 		if (url != null) {
-			txtNavLabel.text = getText(R.string.lbl_navigation_listener_searching)
-			txtNavError.text = ""
-			prgNavSpinner.visible = true
-			prgNavSpinner.isIndeterminate = true
-			parsingTask = ParserTask(this)
-			parsingTask?.execute(url.toString())
+			val navParser = NavigationParser(AndroidGeocoderSearcher(this.applicationContext))
+			val navTrigger = NavigationTriggerSender(this.applicationContext)
+			val controller = NavigationSearchController(lifecycleScope, navParser, navTrigger, viewModel)
+			controller.startNavigation(url.toString())
 		}
-	}
-
-	fun onParseFailure() {
-		txtNavLabel.text = getString(R.string.lbl_navigation_listener_parsefailure)
-		txtNavError.text = intent?.data?.toString() ?: ""
-		prgNavSpinner.visible = false
-		prgNavSpinner.isIndeterminate = false
-		prgNavSpinner.progress = 0
-	}
-
-	fun onBegin() {
-		CarInformation.cdsData.liveData[CDSProperty.NAVIGATION_GUIDANCESTATUS].observe(this) {
-			if (it["guidanceStatus"]?.asInt == 1) {
-				onSuccess()
-			}
-		}
-
-		txtNavLabel.text = getText(R.string.lbl_navigation_listener_pending)
-		txtNavError.text = ""
-
-		Handler().postDelayed({
-			finish()
-		}, TIMEOUT)
-	}
-
-	fun onSuccess() {
-		txtNavLabel.text = getText(R.string.lbl_navigation_listener_success)
-		prgNavSpinner.isIndeterminate = false
-		prgNavSpinner.progress = 0
-
-		val animation = ObjectAnimator.ofInt(prgNavSpinner, "progress", prgNavSpinner.progress, prgNavSpinner.max)
-		animation.duration = 500
-		animation.interpolator = DecelerateInterpolator()
-		animation.start()
-
-		Handler().postDelayed({
-			finish()
-		}, SUCCESS)
-	}
-
-	override fun onPause() {
-		super.onPause()
-		parsingTask?.cancel(false)
 	}
 }
